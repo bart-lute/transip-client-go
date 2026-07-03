@@ -2,7 +2,8 @@ package transip_client_go
 
 import (
 	"net/http"
-	"transip-client-go/models"
+
+	"github.com/bart-lute/transip-client-go/models"
 )
 
 func (c *Client) Domains() (*[]models.Domain, error) {
