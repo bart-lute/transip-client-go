@@ -1,4 +1,4 @@
-module github.com/bart-lute/addigy-client-go
+module github.com/bart-lute/transip-client-go
 
 go 1.26
 
