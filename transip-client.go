@@ -14,19 +14,25 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
 const baseUrl = "https://api.transip.nl/v6"
+const label = "transip-client-go.%d"
 
 type AuthParams struct {
 	Login          string
-	PrivateKey     []byte
 	Label          string
+	PrivateKey     []byte
 	ReadOnly       bool
 	GlobalKey      bool
 	ExpirationTime string
+	NoCache        bool
 }
 
 type Client struct {
@@ -49,6 +55,22 @@ type AuthResponseBody struct {
 
 func Init(authParams *AuthParams) (*Client, error) {
 
+	if authParams == nil {
+		return nil, errors.New("authParams cannot be nil")
+	}
+
+	if authParams.Login == "" {
+		return nil, errors.New("authParams.Login cannot be empty")
+	}
+
+	if authParams.PrivateKey == nil {
+		return nil, errors.New("authParams.PrivateKey cannot be empty")
+	}
+
+	if authParams.Label == "" {
+		authParams.Label = fmt.Sprintf("go-transip-client.%d", time.Now().UnixMicro())
+	}
+
 	token, err := getToken(authParams)
 	if err != nil {
 		return nil, err
@@ -64,6 +86,37 @@ func Init(authParams *AuthParams) (*Client, error) {
 }
 
 func getToken(authParams *AuthParams) (*string, error) {
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+
+	jwtDir := filepath.Join(home, ".transip-client-go")
+	tokenFile := filepath.Join(jwtDir, "token.jwt")
+	if doCache := !authParams.NoCache; doCache {
+		err = os.MkdirAll(jwtDir, 0755)
+		if err != nil {
+			return nil, err
+		}
+
+		// check an existing token first
+		if _, err = os.Stat(tokenFile); err == nil {
+			data, err := os.ReadFile(tokenFile)
+			if err != nil {
+				return nil, err
+			}
+
+			tokenString := string(data)
+			expired, err := tokenExpired(tokenString)
+			if err != nil {
+				return nil, err
+			}
+			if !expired {
+				return &tokenString, nil
+			}
+		}
+	}
 
 	body := &authRequestBody{
 		Login:          authParams.Login,
@@ -125,7 +178,12 @@ func getToken(authParams *AuthParams) (*string, error) {
 		return nil, err
 	}
 
-	return &authResponseBody.Token, nil
+	token := authResponseBody.Token
+	if doCache := !authParams.NoCache; doCache {
+		_ = os.WriteFile(tokenFile, []byte(token), 0600)
+	}
+
+	return &token, nil
 }
 
 func getSignature(privateKey []byte, authRequestBody *authRequestBody) (string, error) {
@@ -204,4 +262,26 @@ func (c *Client) doRequest(method string, endPoint string, requestBody any, resp
 	}
 
 	return nil
+}
+
+func tokenExpired(tokenString string) (bool, error) {
+
+	token, _, err := new(jwt.Parser).ParseUnverified(
+		tokenString,
+		jwt.MapClaims{},
+	)
+	if err != nil {
+		return false, err
+	}
+
+	claims := token.Claims.(jwt.MapClaims)
+
+	exp, err := claims.GetExpirationTime()
+	if err != nil {
+		return false, err
+	}
+
+	// Consider expired if less than 5 minutes remain
+	return time.Now().Add(2 * time.Minute).After(exp.Time), nil
+
 }
